@@ -23,7 +23,7 @@ const EMG_BUFFER_SIZE = 1400; // مساحة لويف العضلات
 
 const SUPABASE_URL = "https://doahbvwljbrjbduhhbtb.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY =
-  "sb_publishable_2ZRNKUPXJuy51hgQ2K_4-g_UOQnbDq8";
+  "sb_publishable_GOZ2XGjxUktLddz6CEAnKw_JZmpd8uB";
 const supabaseClient =
   window.supabase &&
   typeof window.supabase.createClient === "function" &&
