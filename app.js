@@ -21,7 +21,7 @@ const CRITICAL_REOPEN_DEBOUNCE_MS = 10000;
 const ECG_BUFFER_SIZE = 1400;
 const EMG_BUFFER_SIZE = 1400; // مساحة لويف العضلات
 
-const SUPABASE_URL = "https://doahbvwljbrjbduhhbtb.supabase.co";
+const SUPABASE_URL = "https://ayzdeuofjwhgqahabdfu.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY =
   "sb_publishable_GOZ2XGjxUktLddz6CEAnKw_JZmpd8uB";
 const supabaseClient =
