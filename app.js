@@ -790,96 +790,135 @@ function disconnectVestSocket() {
   stopPythonPolling();
   state.ws.connected = false; setECGVisibility(false); setEMGVisibility(false); updateActivePlayerOnline(false);
 }
-
-// ================== MQTT CLOUD CONNECTION ==================
-// ================== SECURE MQTT CLOUD CONNECTION ==================
-// ⚠️ حط الـ Cluster URL بتاعك هنا، وضيف قبله wss:// وبعده :8884/mqtt
-const MQTT_BROKER = "wss:6522c1294037486684bd20328c31939a.s1.eu.hivemq.cloud:8884/mqtt"; 
+const MQTT_BROKER = "wss:6522c1294037486684bd20328c31939a.s1.eu.hivemq.cloud:8884/mqtt"; // ⚠️ ضع اللينك بتاعك
+const MQTT_USERNAME = "WearableTech"; // ⚠️ ضع اليوزر نيم
+const MQTT_PASSWORD = "Abc123@def456"; // ⚠️ ضع الباسورد
 
 const MQTT_TOPIC_CHEST = "gapc/gradproj/player1/chest";
 const MQTT_TOPIC_THIGH = "gapc/gradproj/player1/thigh";
+
 let mqttClient = null;
+
+// 🟢 المخزن المحلي (عشان نحتفظ بقيم السنسورين مع بعض وميمسحوش بعض)
+let latestHardwareVitals = {
+  chest: { status: "Offline", ecgSamples: [] },
+  thigh: { status: "Offline", emgSamples: [] }
+};
+let lastChestPacketTime = 0;
+let lastThighPacketTime = 0;
+let hardwareWatchdog = null;
+
+function disconnectVestSocket() {
+  state.ws.disposed = true;
+  if (mqttClient) {
+    mqttClient.end();
+    mqttClient = null;
+  }
+  if (hardwareWatchdog) { 
+    clearInterval(hardwareWatchdog); 
+    hardwareWatchdog = null; 
+  }
+  state.ws.connected = false;
+  updateActivePlayerOnline(false);
+}
 
 function connectVestSocket() {
   disconnectVestSocket();
-  if (!state.activeVestPlayerId) return;
+  if (!state.activeVestPlayerId) { render(); return; }
   state.ws.disposed = false;
+
+  console.log("☁️ Connecting to HiveMQ Cloud...");
   
-  // الاتصال بالسيرفر المحمي
-  mqttClient = mqtt.connect(MQTT_BROKER, { 
-    clientId: 'web_' + Math.random().toString(16).substr(2, 8),
-    username: 'WearableTech', // ⚠️ اليوزر نيم اللي عملته في HiveMQ
-    password: 'Abc123@def456'  // ⚠️ الباسوورد اللي عملته في HiveMQ
+  mqttClient = mqtt.connect(MQTT_BROKER, {
+    clientId: 'dashboard_web_' + Math.random().toString(16).substr(2, 8),
+    username: MQTT_USERNAME,
+    password: MQTT_PASSWORD,
+    keepalive: 60,
+    reconnectPeriod: 1000
   });
 
   mqttClient.on('connect', () => {
-    console.log("☁️ Connected to Cloud MQTT Broker!");
+    console.log("✅ Connected to MQTT Broker!");
     state.ws.connected = true;
     updateActivePlayerOnline(true);
     
-    // الاشتراك في قنوات الصدر والفخذ
+    // الاشتراك في القنوات
     mqttClient.subscribe(MQTT_TOPIC_CHEST);
     mqttClient.subscribe(MQTT_TOPIC_THIGH);
+    
+    lastChestPacketTime = Date.now();
+    lastThighPacketTime = Date.now();
+
+    // 🟢 حارس أمني زي بتاع البايثون (بيقلب السنسور Offline لو فصل)
+    hardwareWatchdog = setInterval(() => {
+      const now = Date.now();
+      if (now - lastChestPacketTime > 1500) latestHardwareVitals.chest.status = "Offline";
+      if (now - lastThighPacketTime > 1500) latestHardwareVitals.thigh.status = "Offline";
+      
+      handlePythonVitals(latestHardwareVitals);
+    }, 500);
+
     render();
   });
 
   mqttClient.on('message', (topic, message) => {
     try {
-      const payloadStr = message.toString();
-      const packet = payloadStr.split(',');
-      
-      // تجهيز الكيان الوهمي اللي بتفهمه دالة handlePythonVitals
-      let mockVitals = {
-        chest: { status: "Offline", ecgSamples: [] },
-        thigh: { status: "Offline", emgSamples: [] }
-      };
+      const packet = message.toString().split(',');
 
-      // 🟢 فك تشفير حزم الصدر
+      // 🟢 تحديث بيانات الصدر فقط (بدون مسح الفخذ)
       if (topic === MQTT_TOPIC_CHEST) {
+        lastChestPacketTime = Date.now();
+        latestHardwareVitals.chest.status = "Online";
+        
         if (packet[0] === "CH" && packet.length >= 7) {
-          mockVitals.chest = {
-            status: "Online", temp: packet[2], hr: packet[3], spo2: packet[4], battery: packet[5]
-          };
-          handlePythonVitals(mockVitals);
+          latestHardwareVitals.chest.temp = packet[2];
+          latestHardwareVitals.chest.hr = packet[3];
+          latestHardwareVitals.chest.spo2 = packet[4];
+          latestHardwareVitals.chest.battery = packet[5]; // نسبة البطارية
         } else if (packet[0] === "E" && packet.length >= 2) {
-          const ecgVolt = (parseFloat(packet[1]) / 4095.0) * 3.3;
-          mockVitals.chest.status = "Online";
-          mockVitals.chest.ecgSamples = [ecgVolt];
-          handlePythonVitals(mockVitals);
+          latestHardwareVitals.chest.ecgSamples.push((parseFloat(packet[1]) / 4095.0) * 3.3);
         }
-      }
-      
-      // 🟢 فك تشفير حزم الفخذ
+      } 
+      // 🟢 تحديث بيانات الفخذ فقط (بدون مسح الصدر)
       else if (topic === MQTT_TOPIC_THIGH) {
+        lastThighPacketTime = Date.now();
+        latestHardwareVitals.thigh.status = "Online";
+
         if (packet[0] === "TH" && packet.length >= 12) {
-          // حساب التسارع الفعلي
           const ax = parseFloat(packet[4]), ay = parseFloat(packet[5]), az = parseFloat(packet[6]);
           const totalAccel = Math.sqrt(ax*ax + ay*ay + az*az).toFixed(2);
           
-          mockVitals.thigh = {
-            status: "Online", roll: packet[1], pitch: packet[2], accel: totalAccel,
-            steps: packet[7], activity: packet[8], emg: packet[9], battery: packet[10].replace("%", "")
-          };
-          handlePythonVitals(mockVitals);
+          latestHardwareVitals.thigh.roll = packet[1];
+          latestHardwareVitals.thigh.pitch = packet[2];
+          latestHardwareVitals.thigh.accel = totalAccel;
+          latestHardwareVitals.thigh.steps = packet[7];
+          latestHardwareVitals.thigh.activity = packet[8];
+          latestHardwareVitals.thigh.emg = packet[9];
+          latestHardwareVitals.thigh.battery = packet[10].replace("%", "");
         } else if (packet[0] === "M" && packet.length >= 3) {
-          const emgVolt = (parseFloat(packet[1]) / 4095.0) * 3.3;
-          mockVitals.thigh.status = "Online";
-          mockVitals.thigh.emgSamples = [emgVolt];
-          handlePythonVitals(mockVitals);
+          latestHardwareVitals.thigh.emgSamples.push((parseFloat(packet[1]) / 4095.0) * 3.3);
         }
       }
+
+      // إرسال الكيان المدمج للموقع عشان يرسمه
+      handlePythonVitals(latestHardwareVitals);
+      
+      // تفريغ مصفوفات الإشارات السريعة بعد الرسم
+      latestHardwareVitals.chest.ecgSamples = [];
+      latestHardwareVitals.thigh.emgSamples = [];
+
     } catch (err) {
-      console.error("MQTT Parse Error:", err);
+      console.error("Parse Error:", err);
     }
   });
 
   mqttClient.on('error', (err) => {
-    console.error("MQTT Error: ", err);
+    console.error("MQTT Error:", err);
     state.ws.connected = false;
     render();
   });
 
-  mqttClient.on('offline', () => {
+  mqttClient.on('close', () => {
     state.ws.connected = false;
     updateActivePlayerOnline(false);
     render();
