@@ -21,9 +21,9 @@ const CRITICAL_REOPEN_DEBOUNCE_MS = 10000;
 const ECG_BUFFER_SIZE = 1400;
 const EMG_BUFFER_SIZE = 1400; // مساحة لويف العضلات
 
-const SUPABASE_URL = "https://ayzdeuofjwhgqahabdfu.supabase.co";
+const SUPABASE_URL = "https://doahbvwljbrjbduhhbtb.supabase.co";
 const SUPABASE_PUBLISHABLE_KEY =
-  "sb_publishable_GOZ2XGjxUktLddz6CEAnKw_JZmpd8uB";
+  "sb_publishable_2ZRNKUPXJuy51hgQ2K_4-g_UOQnbDq8";
 const supabaseClient =
   window.supabase &&
   typeof window.supabase.createClient === "function" &&
@@ -791,53 +791,116 @@ function disconnectVestSocket() {
   state.ws.connected = false; setECGVisibility(false); setEMGVisibility(false); updateActivePlayerOnline(false);
 }
 
+// ================== MQTT CLOUD CONNECTION ==================
+// ================== SECURE MQTT CLOUD CONNECTION ==================
+// ⚠️ حط الـ Cluster URL بتاعك هنا، وضيف قبله wss:// وبعده :8884/mqtt
+const MQTT_BROKER = "wss:6522c1294037486684bd20328c31939a.s1.eu.hivemq.cloud:8884/mqtt"; 
+
+const MQTT_TOPIC_CHEST = "gapc/gradproj/player1/chest";
+const MQTT_TOPIC_THIGH = "gapc/gradproj/player1/thigh";
+let mqttClient = null;
+
 function connectVestSocket() {
   disconnectVestSocket();
-  if (!state.activeVestPlayerId) { render(); return; }
+  if (!state.activeVestPlayerId) return;
   state.ws.disposed = false;
+  
+  // الاتصال بالسيرفر المحمي
+  mqttClient = mqtt.connect(MQTT_BROKER, { 
+    clientId: 'web_' + Math.random().toString(16).substr(2, 8),
+    username: 'WearableTech', // ⚠️ اليوزر نيم اللي عملته في HiveMQ
+    password: 'Abc123@def456'  // ⚠️ الباسوورد اللي عملته في HiveMQ
+  });
 
-  const connect = () => {
-    if (state.ws.disposed) return;
-    let socket;
-    try { 
-      socket = new WebSocket(DEFAULT_WS_URL); 
-    } catch (error) { 
-      console.warn("⚠️ WebSocket connection failed, falling back to HTTP polling...", error);
-      startPythonPolling();
-      return; 
-    }
-    state.ws.socket = socket;
-    socket.addEventListener("open", () => { state.ws.connected = true; updateActivePlayerOnline(true); stopPythonPolling(); render(); });
-    socket.addEventListener("message", (event) => {
-      try {
-        const parsed = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
-        handlePythonVitals(parsed);
-      } catch (error) {}
-    });
-    socket.addEventListener("error", () => { 
-      console.warn("⚠️ WebSocket error, falling back to HTTP polling...");
-      state.ws.connected = false; 
-      setECGVisibility(false); 
-      setEMGVisibility(false); 
-      updateActivePlayerOnline(false); 
-      startPythonPolling();
-      render(); 
-    });
-    socket.addEventListener("close", () => { 
-      state.ws.connected = false; 
-      setECGVisibility(false); 
-      setEMGVisibility(false); 
-      updateActivePlayerOnline(false); 
-      render(); 
-      if (!state.ws.disposed) {
-        console.warn("⚠️ WebSocket closed, falling back to HTTP polling...");
-        startPythonPolling();
-        state.ws.reconnectTimer = window.setTimeout(connect, RECONNECT_DELAY_MS);
+  mqttClient.on('connect', () => {
+    console.log("☁️ Connected to Cloud MQTT Broker!");
+    state.ws.connected = true;
+    updateActivePlayerOnline(true);
+    
+    // الاشتراك في قنوات الصدر والفخذ
+    mqttClient.subscribe(MQTT_TOPIC_CHEST);
+    mqttClient.subscribe(MQTT_TOPIC_THIGH);
+    render();
+  });
+
+  mqttClient.on('message', (topic, message) => {
+    try {
+      const payloadStr = message.toString();
+      const packet = payloadStr.split(',');
+      
+      // تجهيز الكيان الوهمي اللي بتفهمه دالة handlePythonVitals
+      let mockVitals = {
+        chest: { status: "Offline", ecgSamples: [] },
+        thigh: { status: "Offline", emgSamples: [] }
+      };
+
+      // 🟢 فك تشفير حزم الصدر
+      if (topic === MQTT_TOPIC_CHEST) {
+        if (packet[0] === "CH" && packet.length >= 7) {
+          mockVitals.chest = {
+            status: "Online", temp: packet[2], hr: packet[3], spo2: packet[4], battery: packet[5]
+          };
+          handlePythonVitals(mockVitals);
+        } else if (packet[0] === "E" && packet.length >= 2) {
+          const ecgVolt = (parseFloat(packet[1]) / 4095.0) * 3.3;
+          mockVitals.chest.status = "Online";
+          mockVitals.chest.ecgSamples = [ecgVolt];
+          handlePythonVitals(mockVitals);
+        }
       }
-    });
-  };
-  connect();
+      
+      // 🟢 فك تشفير حزم الفخذ
+      else if (topic === MQTT_TOPIC_THIGH) {
+        if (packet[0] === "TH" && packet.length >= 12) {
+          // حساب التسارع الفعلي
+          const ax = parseFloat(packet[4]), ay = parseFloat(packet[5]), az = parseFloat(packet[6]);
+          const totalAccel = Math.sqrt(ax*ax + ay*ay + az*az).toFixed(2);
+          
+          mockVitals.thigh = {
+            status: "Online", roll: packet[1], pitch: packet[2], accel: totalAccel,
+            steps: packet[7], activity: packet[8], emg: packet[9], battery: packet[10].replace("%", "")
+          };
+          handlePythonVitals(mockVitals);
+        } else if (packet[0] === "M" && packet.length >= 3) {
+          const emgVolt = (parseFloat(packet[1]) / 4095.0) * 3.3;
+          mockVitals.thigh.status = "Online";
+          mockVitals.thigh.emgSamples = [emgVolt];
+          handlePythonVitals(mockVitals);
+        }
+      }
+    } catch (err) {
+      console.error("MQTT Parse Error:", err);
+    }
+  });
+
+  mqttClient.on('error', (err) => {
+    console.error("MQTT Error: ", err);
+    state.ws.connected = false;
+    render();
+  });
+
+  mqttClient.on('offline', () => {
+    state.ws.connected = false;
+    updateActivePlayerOnline(false);
+    render();
+  });
 }
+
+function disconnectVestSocket() {
+  state.ws.disposed = true;
+  if (mqttClient) {
+    mqttClient.end();
+    mqttClient = null;
+  }
+  state.ws.connected = false;
+  updateActivePlayerOnline(false);
+}
+
+function updateActivePlayerOnline(isConnected) { 
+  if (!state.activeVestPlayerId) return; 
+  state.players = state.players.map(p => p.id === state.activeVestPlayerId ? { ...p, online: isConnected } : p); 
+}
+// ===========================================================
 
 let pythonPollingTimer = null;
 
